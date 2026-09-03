@@ -102,7 +102,7 @@ class JoinedModality(Modality):
                 self.joined_right.data[i - starting_idx].append([])
                 right = np.array([])
                 if self.condition.join_type == "<":
-                    while c < len(idx_2) - 1 and idx_2[c] < nextIdx[j]:
+                    while c < len(idx_2) and idx_2[c] < nextIdx[j]:
                         if right.size == 0:
                             right = self.right_modality.data[i][c]
                             if right.ndim == 1:
@@ -123,15 +123,21 @@ class JoinedModality(Modality):
                                 )
                         c = c + 1
                 else:
-                    while c < len(idx_2) - 1 and idx_2[c] <= idx_1[j]:
+                    matches = []
+                    while c < len(idx_2) and idx_2[c] <= idx_1[j]:
                         if idx_2[c] == idx_1[j]:
-                            right.append(self.right_modality.data[i][c])
+                            match = self.right_modality.data[i][c]
+                            if match.ndim == 1:
+                                match = match[np.newaxis, :]
+                            matches.append(match)
                         c = c + 1
+                    if matches:
+                        right = np.concatenate(matches, axis=0)
 
                 if (
                     len(right) == 0
                 ):  # Audio and video length sometimes do not match so we add the average all audio samples for this specific frame
-                    right = np.mean(self.right_modality.data[i][c - 1 : c], axis=0)
+                    right = np.mean(self.right_modality.data[i], axis=0)
                     if right.ndim == 1:
                         right = right[
                             np.newaxis, :
