@@ -49,19 +49,32 @@ class TestDataLoadersLoadFromFiles(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.test_file_path)
 
-    def test_audio_loader_loads_all_instances(self):
-        loader = AudioLoader(
-            self.data_generator.get_modality_path(ModalityType.AUDIO),
-            self.data_generator.indices,
-        )
-        data, metadata = loader.load()
+    # Loading is the same contract for every loader -- one array plus one
+    # metadata entry per instance, at the dimensionality that modality has --
+    # so the three cases only differed in the loader class and the expected
+    # ndim. The stats tests below stay separate: each stats class exposes
+    # different fields, so there is no shared assertion to parameterise.
+    LOADERS_AND_DIMENSIONS = [
+        (AudioLoader, ModalityType.AUDIO, 1),
+        (VideoLoader, ModalityType.VIDEO, 4),
+        (ImageLoader, ModalityType.IMAGE, 3),
+    ]
 
-        self.assertEqual(len(data), self.num_instances)
-        self.assertEqual(len(metadata), self.num_instances)
+    def test_loaders_load_all_instances(self):
+        for loader_class, modality_type, expected_ndim in self.LOADERS_AND_DIMENSIONS:
+            with self.subTest(loader=loader_class.__name__):
+                loader = loader_class(
+                    self.data_generator.get_modality_path(modality_type),
+                    self.data_generator.indices,
+                )
+                data, metadata = loader.load()
 
-        for arr in data:
-            self.assertIsInstance(arr, np.ndarray)
-            self.assertEqual(arr.ndim, 1)
+                self.assertEqual(len(data), self.num_instances)
+                self.assertEqual(len(metadata), self.num_instances)
+
+                for arr in data:
+                    self.assertIsInstance(arr, np.ndarray)
+                    self.assertEqual(arr.ndim, expected_ndim)
 
     def test_audio_loader_stats(self):
         loader = AudioLoader(
@@ -75,20 +88,6 @@ class TestDataLoadersLoadFromFiles(unittest.TestCase):
         self.assertEqual(stats.sampling_rate, 22050)
         self.assertEqual(stats.max_length, 44100)
         self.assertAlmostEqual(stats.avg_length, (44100 * 2) / 2.0)
-
-    def test_video_loader_loads_all_instances(self):
-        loader = VideoLoader(
-            self.data_generator.get_modality_path(ModalityType.VIDEO),
-            self.data_generator.indices,
-        )
-        data, metadata = loader.load()
-
-        self.assertEqual(len(data), self.num_instances)
-        self.assertEqual(len(metadata), self.num_instances)
-
-        for arr in data:
-            self.assertIsInstance(arr, np.ndarray)
-            self.assertEqual(arr.ndim, 4)
 
     def test_video_loader_stats(self):
         loader = VideoLoader(
@@ -128,20 +127,6 @@ class TestDataLoadersLoadFromFiles(unittest.TestCase):
         self.assertEqual(stats.num_instances, 2)
         self.assertEqual(stats.max_length, 7)
         self.assertAlmostEqual(stats.avg_length, (7 + 7) / 2.0)
-
-    def test_image_loader_loads_all_instances(self):
-        loader = ImageLoader(
-            self.data_generator.get_modality_path(ModalityType.IMAGE),
-            self.data_generator.indices,
-        )
-        data, metadata = loader.load()
-
-        self.assertEqual(len(data), self.num_instances)
-        self.assertEqual(len(metadata), self.num_instances)
-
-        for arr in data:
-            self.assertIsInstance(arr, np.ndarray)
-            self.assertEqual(arr.ndim, 3)
 
     def test_image_loader_stats(self):
         loader = ImageLoader(
