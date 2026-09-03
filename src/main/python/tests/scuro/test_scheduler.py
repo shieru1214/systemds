@@ -177,6 +177,9 @@ class TestNodeResourceScheduler(unittest.TestCase):
             scheduler.move_to_running(node)
             scheduler.complete_node(node)
         ready_nodes_2 = scheduler.get_runnable()
+        # Without this the loop below is skipped when the scheduler returns
+        # nothing and the test passes without checking anything.
+        self.assertEqual(len(ready_nodes_2), 1)
         for node in ready_nodes_2:
             self.assertGreaterEqual(
                 get_node_from_dags(self.dags, node).parameters["dimensionality"], 1000
@@ -218,6 +221,12 @@ class TestNodeResourceScheduler(unittest.TestCase):
         self.assertTrue(scheduler.success)
 
     def test_deadlock_when_no_nodes_are_runnable(self):
+        # The memory budget is too small for any node, so the scheduler has to
+        # stop without having run anything. is_finished() alone cannot show
+        # that: the loop below only exits once it returns True, so asserting it
+        # afterwards is a tautology. success is what separates this case from
+        # test_finished_when_no_nodes_are_runnable, which is otherwise the same
+        # test with a larger budget.
         scheduler = MemoryAwareNodeScheduler(
             self.dags, self.modalities, self.tasks, 1024 * 1024 * 3, 0
         )
@@ -226,5 +235,5 @@ class TestNodeResourceScheduler(unittest.TestCase):
             for node in ready_nodes.copy():
                 scheduler.move_to_running(node)
                 scheduler.complete_node(node)
-        self.assertTrue(scheduler.is_finished())
         self.assertFalse(scheduler.success)
+        self.assertEqual(len(scheduler.completed_nodes), 0)

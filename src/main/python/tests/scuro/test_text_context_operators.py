@@ -29,78 +29,112 @@ from systemds.scuro.representations.text_context_with_indices import (
     SentenceBoundarySplitIndices,
     OverlappingSplitIndices,
 )
-from tests.scuro.data_generator import (
-    ModalityRandomDataGenerator,
-    TestDataLoader,
-    TestTask,
-)
+from tests.scuro.data_generator import TestDataLoader
 from systemds.scuro.modality.unimodal_modality import UnimodalModality
 from systemds.scuro.modality.type import ModalityType
-from systemds.scuro.representations.bert import Bert
 
 
 class TestTextContextOperator(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.data_generator = ModalityRandomDataGenerator()
-        cls.data, cls.md = cls.data_generator.create_text_data(10, 50)
-        cls.text_modality = UnimodalModality(
+    """
+    The input is fixed so that the exact chunk boundaries and character spans
+    can be written down. With randomly generated sentences the only assertable
+    properties are invariants ("a chunk has at most max_words", "consecutive
+    chunks share their first/last words"), and those pass for a large family of
+    wrong implementations.
+    """
+
+    # 3 sentences, 5 words each, 77 characters
+    THREE_SENTENCES = (
+        "The cat reads the document. A dog writes the code. The bird studies the data."
+    )
+    # 1 sentence, 5 words, 27 characters - stays below max_words for every case
+    ONE_SENTENCE = "The cat reads the document."
+
+    SENTENCE_MAX_WORDS = 10
+    SENTENCE_MIN_WORDS = 4
+    # sentence 1 + 2 fill the 10 word budget, sentence 3 starts a new chunk
+    EXPECTED_SENTENCE_CHUNKS = [
+        [
+            "The cat reads the document. A dog writes the code.",
+            "The bird studies the data.",
+        ],
+        [ONE_SENTENCE],
+    ]
+
+    OVERLAP_MAX_WORDS = 6
+    OVERLAP = 0.5  # -> stride of 3 words, i.e. 3 words shared per chunk pair
+    EXPECTED_OVERLAPPING_CHUNKS = [
+        [
+            "The cat reads the document. A",
+            "the document. A dog writes the",
+            "dog writes the code. The bird",
+            "code. The bird studies the data.",
+        ],
+        [ONE_SENTENCE],
+    ]
+
+    def setUp(self):
+        # Rebuilt for every test: the *Indices operators write "text_spans"
+        # into the modality metadata, so a class level modality would leak the
+        # spans of one test into the next one (test order is alphabetical).
+        self.texts = [self.THREE_SENTENCES, self.ONE_SENTENCE]
+        metadata = [
+            ModalityType.TEXT.create_metadata(len(text), text) for text in self.texts
+        ]
+        self.text_modality = UnimodalModality(
             TestDataLoader(
-                [i for i in range(0, 10)],
+                list(range(len(self.texts))),
                 None,
                 ModalityType.TEXT,
-                cls.data,
+                list(self.texts),
                 str,
-                cls.md,
+                metadata,
             )
         )
-        cls.text_modality.extract_raw_data()
-        cls.task = TestTask("TextContextTask", "Test1", 10)
+        self.text_modality.extract_raw_data()
+
+    def _spans(self):
+        return [metadata["text_spans"] for metadata in self.text_modality.metadata]
+
+    def _sliced_by_spans(self):
+        return [
+            [text[start:end] for start, end in spans]
+            for text, spans in zip(self.text_modality.data, self._spans())
+        ]
 
     def test_sentence_boundary_split(self):
-        sentence_boundary_split = SentenceBoundarySplit(10, min_words=4)
-        chunks = sentence_boundary_split.execute(self.text_modality)
-        for i in range(0, len(chunks)):
-            for chunk in chunks[i]:
-                assert len(chunk.split(" ")) <= 10 and (
-                    chunk[-1] == "." or chunk[-1] == "!" or chunk[-1] == "?"
-                )
+        chunks = SentenceBoundarySplit(
+            self.SENTENCE_MAX_WORDS, min_words=self.SENTENCE_MIN_WORDS
+        ).execute(self.text_modality)
+
+        self.assertEqual(chunks, self.EXPECTED_SENTENCE_CHUNKS)
 
     def test_overlapping_split(self):
-        overlapping_split = OverlappingSplit(40, 0.05)
-        chunks = overlapping_split.execute(self.text_modality)
-        for i in range(len(chunks)):
-            prev_chunk = ""
-            for j, chunk in enumerate(chunks[i]):
-                if j > 0:
-                    prev_words = prev_chunk.split(" ")
-                    curr_words = chunk.split(" ")
-                    assert prev_words[-2:] == curr_words[:2]
-                prev_chunk = chunk
-                assert len(chunk.split(" ")) <= 40
+        chunks = OverlappingSplit(self.OVERLAP_MAX_WORDS, self.OVERLAP).execute(
+            self.text_modality
+        )
+
+        self.assertEqual(chunks, self.EXPECTED_OVERLAPPING_CHUNKS)
 
     def test_sentence_boundary_split_indices(self):
-        sentence_boundary_split = SentenceBoundarySplitIndices(10, min_words=4)
-        sentence_boundary_split.execute(self.text_modality)
-        for instance, md in zip(self.text_modality.data, self.text_modality.metadata):
-            for chunk in md["text_spans"]:
-                text = instance[chunk[0] : chunk[1]].split(" ")
-                assert len(text) <= 10 and (
-                    text[-1][-1] == "." or text[-1][-1] == "!" or text[-1][-1] == "?"
-                )
+        SentenceBoundarySplitIndices(
+            self.SENTENCE_MAX_WORDS, min_words=self.SENTENCE_MIN_WORDS
+        ).execute(self.text_modality)
+
+        self.assertEqual(self._spans(), [[(0, 50), (51, 77)], [(0, 27)]])
+        # the spans have to cut the original text into the same chunks the
+        # string returning variant produces
+        self.assertEqual(self._sliced_by_spans(), self.EXPECTED_SENTENCE_CHUNKS)
 
     def test_overlapping_split_indices(self):
-        overlapping_split = OverlappingSplitIndices(40, 0.1)
-        overlapping_split.execute(self.text_modality)
-        for instance, md in zip(self.text_modality.data, self.text_modality.metadata):
-            prev_chunk = (0, 0)
-            for j, chunk in enumerate(md["text_spans"]):
-                if j > 0:
-                    prev_words = instance[prev_chunk[0] : prev_chunk[1]].split(" ")
-                    curr_words = instance[chunk[0] : chunk[1]].split(" ")
-                    assert prev_words[-4:] == curr_words[:4]
-                prev_chunk = chunk
-                assert len(instance[chunk[0] : chunk[1]].split(" ")) <= 40
+        OverlappingSplitIndices(self.OVERLAP_MAX_WORDS, self.OVERLAP).execute(
+            self.text_modality
+        )
+
+        self.assertEqual(
+            self._spans(), [[(0, 29), (14, 44), (30, 59), (45, 77)], [(0, 27)]]
+        )
+        self.assertEqual(self._sliced_by_spans(), self.EXPECTED_OVERLAPPING_CHUNKS)
 
 
 if __name__ == "__main__":
