@@ -74,16 +74,31 @@ class TestHPTuner(unittest.TestCase):
             TestTask("UnimodalRepresentationTask2", "TestSVM2", cls.num_instances),
         ]
 
-    def test_hp_tuner_for_text_modality(self):
-        text_data, text_md = ModalityRandomDataGenerator().create_text_data(
-            self.num_instances
-        )
-        text = UnimodalModality(
-            TestDataLoader(
-                self.indices, None, ModalityType.TEXT, text_data, str, text_md
+    def _create_modality(self, modality_type):
+        if modality_type is ModalityType.TEXT:
+            data, metadata = ModalityRandomDataGenerator().create_text_data(
+                self.num_instances
             )
+            data_type = str
+        else:
+            data, metadata = ModalityRandomDataGenerator().create_visual_modality(
+                self.num_instances, 1
+            )
+            data_type = np.float32
+
+        return UnimodalModality(
+            TestDataLoader(self.indices, None, modality_type, data, data_type, metadata)
         )
-        self.run_hp_for_modality([text])
+
+    def test_hp_tuner_per_modality(self):
+        # The text and image cases ran the same tuner over the same registry and
+        # asserted the same thing -- every assertion lives in
+        # run_hp_for_modality, so the two tests differed only in how the
+        # modality is built. Building it is a factory and the modality type is a
+        # subTest dimension; both cases still run and are reported separately.
+        for modality_type in [ModalityType.TEXT, ModalityType.IMAGE]:
+            with self.subTest(modality=modality_type.name):
+                self.run_hp_for_modality([self._create_modality(modality_type)])
 
     # TODO: Add once the final multimodal optimizer is implemented
     # def test_multimodal_hp_tuning(self):
@@ -108,17 +123,6 @@ class TestHPTuner(unittest.TestCase):
     #     self.run_hp_for_modality(
     #         [audio, text], multimodal=True, tune_unimodal_representations=False
     #     )
-
-    def test_hp_tuner_for_image_modality(self):
-        image_data, image_md = ModalityRandomDataGenerator().create_visual_modality(
-            self.num_instances, 1
-        )
-        image = UnimodalModality(
-            TestDataLoader(
-                self.indices, None, ModalityType.IMAGE, image_data, np.float32, image_md
-            )
-        )
-        self.run_hp_for_modality([image])
 
     def run_hp_for_modality(
         self, modalities, multimodal=False, tune_unimodal_representations=False
