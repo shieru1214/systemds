@@ -75,103 +75,91 @@ class TestWindowOperations(unittest.TestCase):
         cls.data_generator = ModalityRandomDataGenerator()
         cls.aggregations = ["mean", "sum", "max", "min"]
 
-    def test_static_window(self):
+    def test_fixed_window_count_operators(self):
+        # StaticWindow and DynamicWindow place their window boundaries
+        # differently, but the only thing asserted here is the contract they
+        # share: exactly num_windows segments per instance, whatever the input
+        # length. The two operators were spelled out as separate tests whose
+        # bodies differed in one word.
         num_windows = 5
         data, md = self.data_generator.create_visual_modality(self.num_instances, 10)
-        modality = UnimodalModality(
-            TestDataLoader(
-                [i for i in range(0, self.num_instances)],
-                None,
-                ModalityType.VIDEO,
-                data,
-                np.float32,
-                md,
+
+        for window_operator in [StaticWindow, DynamicWindow]:
+            with self.subTest(operator=window_operator.__name__):
+                modality = UnimodalModality(
+                    TestDataLoader(
+                        [i for i in range(0, self.num_instances)],
+                        None,
+                        ModalityType.VIDEO,
+                        data,
+                        np.float32,
+                        md,
+                    )
+                )
+                aggregated_window = modality.context(
+                    window_operator(num_windows=num_windows)
+                )
+
+                for i in range(0, self.num_instances):
+                    self.assertEqual(len(aggregated_window.data[i]), num_windows)
+
+    def test_window_aggregation_on_1d_modalities(self):
+        # create1DModality produces the same random matrix for all three
+        # modality types -- only the metadata label differs -- and
+        # window_aggregation dispatches on the data layout, not on the modality
+        # type. The three per-modality tests therefore ran identical code over
+        # identical numbers; the modality is a subTest dimension instead.
+        window_size = 10
+
+        for modality_type in [
+            ModalityType.AUDIO,
+            ModalityType.VIDEO,
+            ModalityType.TEXT,
+        ]:
+            r = self.data_generator.create1DModality(
+                self.num_instances, 200, modality_type
             )
-        )
-        aggregated_window = modality.context(StaticWindow(num_windows=num_windows))
+            for aggregation in self.aggregations:
+                with self.subTest(modality=modality_type.name, aggregation=aggregation):
+                    windowed_modality = r.window_aggregation(window_size, aggregation)
+                    self.verify_window_operation(
+                        aggregation, r, windowed_modality, window_size
+                    )
 
-        for i in range(0, self.num_instances):
-            assert len(aggregated_window.data[i]) == num_windows
-
-    def test_dynamic_window(self):
-        num_windows = 5
-        data, md = self.data_generator.create_visual_modality(self.num_instances, 10)
-        modality = UnimodalModality(
-            TestDataLoader(
-                [i for i in range(0, self.num_instances)],
-                None,
-                ModalityType.VIDEO,
-                data,
-                np.float32,
-                md,
-            )
-        )
-        aggregated_window = modality.context(DynamicWindow(num_windows=num_windows))
-
-        for i in range(0, self.num_instances):
-            assert len(aggregated_window.data[i]) == num_windows
-
-    def test_window_aggregation_on_audio_representations(self):
-        window_size = 10
-        self.run_window_aggregation_for_modality(ModalityType.AUDIO, window_size)
-
-    def test_window_operations_on_video_representations(self):
-        window_size = 10
-        self.run_window_aggregation_for_modality(ModalityType.VIDEO, window_size)
-
-    def test_window_operations_on_text_representations(self):
-        window_size = 10
-
-        self.run_window_aggregation_for_modality(ModalityType.TEXT, window_size)
-
-    def run_window_aggregation_for_modality(self, modality_type, window_size):
-        r = self.data_generator.create1DModality(self.num_instances, 200, modality_type)
-        for aggregation in self.aggregations:
-            windowed_modality = r.window_aggregation(window_size, aggregation)
-
-            self.verify_window_operation(aggregation, r, windowed_modality, window_size)
-
-    def test_window_aggregation_on_3d_modality(self):
-        data, _ = self.data_generator.create_3d_modality(
-            self.num_instances, (100, 8, 8)
-        )
-        embedding_modality = TransformedModality(
-            self.data_generator, "test_transformation"
-        )
-        embedding_modality.data = data
-        embedding_modality.stats = RepresentationStats(self.num_instances, (100, 8, 8))
+    def test_window_aggregation_on_nd_modality(self):
+        # Window aggregation compresses the first (time) axis and leaves every
+        # feature axis untouched, so the expected shape is
+        # (num_windows,) + dims[1:] for any number of dimensions. One
+        # expression covers the 3d and 2d cases that were written out as two
+        # otherwise identical tests.
         num_windows = 10
 
-        for window_operator in [
-            StaticWindow(num_windows=num_windows),
-            DynamicWindow(num_windows=num_windows),
-            WindowAggregation(window_size=10),
-        ]:
-            stats = window_operator.get_output_stats(embedding_modality.stats)
-            assert stats.num_instances == self.num_instances
-            assert stats.output_shape == (num_windows, 8, 8)
+        for dims in [(100, 8, 8), (100, 8)]:
+            if len(dims) == 3:
+                data, _ = self.data_generator.create_3d_modality(
+                    self.num_instances, dims
+                )
+            else:
+                data, _ = self.data_generator.create_2d_modality(
+                    self.num_instances, dims
+                )
+            embedding_modality = TransformedModality(
+                self.data_generator, "test_transformation"
+            )
+            embedding_modality.data = data
+            embedding_modality.stats = RepresentationStats(self.num_instances, dims)
 
-            windowed_modality = embedding_modality.context(window_operator)
+            for window_operator in [
+                StaticWindow(num_windows=num_windows),
+                DynamicWindow(num_windows=num_windows),
+                WindowAggregation(window_size=10),
+            ]:
+                with self.subTest(dims=dims, operator=type(window_operator).__name__):
+                    stats = window_operator.get_output_stats(embedding_modality.stats)
+                    self.assertEqual(stats.num_instances, self.num_instances)
+                    self.assertEqual(stats.output_shape, (num_windows,) + dims[1:])
 
-    def test_window_aggregation_on_2d_modality(self):
-        data, _ = self.data_generator.create_2d_modality(self.num_instances, (100, 8))
-        embedding_modality = TransformedModality(
-            self.data_generator, "test_transformation"
-        )
-        embedding_modality.data = data
-        embedding_modality.stats = RepresentationStats(self.num_instances, (100, 8))
-        num_windows = 10
-
-        for window_operator in [
-            StaticWindow(num_windows=num_windows),
-            DynamicWindow(num_windows=num_windows),
-            WindowAggregation(window_size=10),
-        ]:
-            stats = window_operator.get_output_stats(embedding_modality.stats)
-            assert stats.num_instances == self.num_instances
-            assert stats.output_shape == (num_windows, 8)
-
-            windowed_modality = embedding_modality.context(window_operator)
+                    embedding_modality.context(window_operator)
 
     def _timeseries_modality(self, signal_length=100):
         return self.data_generator.create1DModality(
